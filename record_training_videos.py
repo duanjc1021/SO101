@@ -26,7 +26,16 @@ import cv2
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30.0
-DEFAULT_CAMERA = "/dev/video2"
+# Scene cameras matching view_cameras.py: RealSense D435i RGB + USB2.0 CAM1.
+# Pin to stable /dev/v4l/by-id paths instead of /dev/videoN numbers, which shuffle
+# on reboot/replug (the RealSense exposes 4 nodes; its RGB index has been video4
+# and video2 on different boots). The RealSense RGB color stream is its
+# "video-index2" node; the other RealSense indices are depth/IR and either won't
+# open or deliver non-RGB frames, so they are deliberately not used here.
+DEFAULT_CAMERAS = (
+    "/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index2",
+    "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
+)
 # Pin to stable by-id paths (serial numbers) instead of volatile ttyACM* numbers,
 # which can swap between the two arms on reboot/replug.
 DEFAULT_FOLLOWER_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14111036-if00"
@@ -53,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Camera device or index. Repeat for multiple cameras. "
-            f"Default: {DEFAULT_CAMERA}"
+            f"Default: {', '.join(DEFAULT_CAMERAS)}"
         ),
     )
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
@@ -115,25 +124,70 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _try_warmup(cap: cv2.VideoCapture, attempts: int, delay_s: float) -> bool:
+    """Read a few frames to confirm the negotiated format actually streams.
+
+    A camera that accepts a format it cannot deliver (e.g. a RealSense color node
+    asked for MJPG) blocks in V4L2 select() and never returns a frame, so we cap
+    the number of attempts rather than waiting forever.
+    """
+    for _ in range(attempts):
+        ok, _frame = cap.read()
+        if ok:
+            return True
+        time.sleep(delay_s)
+    return False
+
+
 def open_camera(device: str | int, width: int, height: int, fps: float) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open camera: {device}")
+        raise RuntimeError(
+            f"Could not open camera: {device}\n"
+            "It may be in use by another process (only one program can hold a "
+            "UVC camera at a time). Check with: fuser /dev/video*"
+        )
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    # Prefer MJPG (compressed, sustains 640x480@30 on the USB webcam), but fall
+    # back to the camera's native format. Forcing MJPG on a camera that cannot
+    # produce it — notably the RealSense color node, which is UYVY-only — makes
+    # read() hang in V4L2 select() forever (the "select() timeout" symptom).
+    # Set FOURCC before resolution so the driver negotiates the pixel format first.
+    def configure(fourcc: str | None) -> None:
+        if fourcc is not None:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
 
+    configure("MJPG")
+    # Short probe: if MJPG doesn't stream quickly, it isn't supported here.
+    if not _try_warmup(cap, attempts=10, delay_s=0.05):
+        logging.warning(
+            "Camera %s did not stream with MJPG; falling back to native format.",
+            device,
+        )
+        # Reopen cleanly — a wedged MJPG negotiation can leave the handle unusable.
+        cap.release()
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            raise RuntimeError(f"Could not reopen camera: {device}")
+        configure(None)
+    # NOTE: do not force CAP_PROP_BUFFERSIZE=1 here. The USB2.0 CAM1 then blocks
+    # per read and the synchronized camera pair drops from 30 to ~20 FPS.
+
+    fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+    fourcc_str = "".join(chr((fourcc_int >> (8 * k)) & 0xFF) for k in range(4))
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
     logging.info(
-        "Opened camera %s at reported %sx%s @ %.2f FPS",
+        "Opened camera %s at reported %sx%s @ %.2f FPS (%s)",
         device,
         actual_width,
         actual_height,
         actual_fps,
+        fourcc_str,
     )
 
     if actual_width != width or actual_height != height:
@@ -146,15 +200,8 @@ def open_camera(device: str | int, width: int, height: int, fps: float) -> cv2.V
             height,
         )
 
-    # Some UVC cameras report ready before the stream has produced a valid frame.
-    # Warm up here so the recording loop starts with stable reads.
-    warmed_up = False
-    for _ in range(30):
-        ok, _frame = cap.read()
-        if ok:
-            warmed_up = True
-            break
-        time.sleep(0.05)
+    # Confirm the final configuration produces frames before recording starts.
+    warmed_up = _try_warmup(cap, attempts=30, delay_s=0.05)
     if not warmed_up:
         cap.release()
         raise RuntimeError(f"Could not read a warmup frame from camera: {device}")
@@ -222,7 +269,7 @@ def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
-    cameras = [parse_camera(camera) for camera in (args.camera or [DEFAULT_CAMERA])]
+    cameras = [parse_camera(camera) for camera in (args.camera or list(DEFAULT_CAMERAS))]
     episode_name = args.episode_name or datetime.now().strftime("episode_%Y%m%d_%H%M%S")
     episode_dir = args.output_dir.expanduser().resolve() / episode_name
     episode_dir.mkdir(parents=True, exist_ok=False)
@@ -311,6 +358,13 @@ def main() -> int:
         next_frame_time = start_time
         frame_period = 1.0 / args.fps
 
+        # Tolerate brief camera hiccups instead of discarding the whole episode on
+        # the first dropped frame. Abort only if a camera stalls for this many
+        # consecutive reads (the V4L2 "select() timeout" symptom when a device is
+        # contended or wedged), which at 30 FPS is a few seconds of no frames.
+        max_consecutive_read_failures = max(1, int(args.fps * 3))
+        consecutive_failures = [0 for _ in captures]
+
         while not stop_requested:
             if args.duration > 0 and time.perf_counter() - start_time >= args.duration:
                 break
@@ -319,13 +373,33 @@ def main() -> int:
             timestamp_s = now - start_time
 
             frames = []
-            for camera, cap in zip(cameras, captures, strict=True):
+            read_failed = False
+            for cam_idx, (camera, cap) in enumerate(zip(cameras, captures, strict=True)):
                 ok, frame = cap.read()
                 if not ok:
-                    raise RuntimeError(f"Failed to read frame from camera: {camera}")
+                    consecutive_failures[cam_idx] += 1
+                    if consecutive_failures[cam_idx] >= max_consecutive_read_failures:
+                        raise RuntimeError(
+                            f"Camera {camera} returned no frames for "
+                            f"{consecutive_failures[cam_idx]} consecutive reads; "
+                            "it is likely disconnected or in use by another process."
+                        )
+                    logging.warning(
+                        "Dropped frame from camera %s (%d/%d before abort)",
+                        camera,
+                        consecutive_failures[cam_idx],
+                        max_consecutive_read_failures,
+                    )
+                    read_failed = True
+                    break
+                consecutive_failures[cam_idx] = 0
                 if frame.shape[1] != args.width or frame.shape[0] != args.height:
                     frame = cv2.resize(frame, (args.width, args.height), interpolation=cv2.INTER_AREA)
                 frames.append(frame)
+
+            if read_failed:
+                # Skip this tick entirely so cameras stay frame-aligned; retry next loop.
+                continue
 
             observation = None
             action = None
