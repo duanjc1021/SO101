@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
         description="Start training recording with Enter and stop with Space."
     )
     parser.add_argument("--camera", action="append", default=None, help="Camera device. Repeat for multiple cameras.")
-    parser.add_argument("--output-dir", type=Path, default=Path("recordings"))
+    parser.add_argument("--output-dir", type=Path, default=Path("/home/jincheng/Desktop/vla/SO101trainingvideo"))
     parser.add_argument("--episode-name", default=None)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)

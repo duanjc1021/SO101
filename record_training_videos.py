@@ -4,7 +4,7 @@
 Examples:
   python record_training_videos.py
   python record_training_videos.py --camera /dev/video0 --camera /dev/video2 --duration 60
-  python record_training_videos.py --output-dir recordings/towel_fold --episode-name demo_001
+  python record_training_videos.py --output-dir /home/jincheng/Desktop/vla/SO101trainingvideo/towel_fold --episode-name demo_001
 
 Stop an unlimited recording with Ctrl+C.
 """
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("recordings"),
+        default=Path("/home/jincheng/Desktop/vla/SO101trainingvideo"),
         help="Directory where episode folders will be written.",
     )
     parser.add_argument(
