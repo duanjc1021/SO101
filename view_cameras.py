@@ -1,9 +1,10 @@
 #!/home/jincheng/Desktop/vla/lerobot/.miniforge3/envs/lerobot/bin/python
 """Serve connected camera feeds in a local browser page.
 
-Defaults for this setup:
-  RealSense D435i: /dev/video4
-  USB2.0 CAM1:    /dev/video6
+Defaults for this setup (pinned to stable /dev/v4l/by-id paths, since /dev/videoN
+numbers shuffle on replug):
+  RealSense D435i RGB color node (video-index0)
+  USB2.0 CAM1
 
 Run:
   python view_cameras.py
@@ -28,15 +29,23 @@ import cv2
 import numpy as np
 
 
-DEFAULT_CAMERAS = ("/dev/video4", "/dev/video6")
+# Stable /dev/v4l/by-id paths (device numbers shuffle on reboot/replug). The RealSense
+# RGB *color* stream is video-index0; video-index2 is an infrared (grayscale) node.
+REALSENSE_COLOR = (
+    "/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_"
+    "Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index0"
+)
+USB_CAM1 = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
+
+DEFAULT_CAMERAS = (REALSENSE_COLOR, USB_CAM1)
 DEFAULT_CAMERA_LABELS = {
-    "/dev/video4": "RealSense D435i",
-    "/dev/video6": "USB2.0 CAM1",
+    REALSENSE_COLOR: "RealSense D435i",
+    USB_CAM1: "USB2.0 CAM1",
 }
 DEFAULT_CAMERA_CROPS = {
     # Keep the tabletop workspace shown in the screenshots and crop out the less useful edges.
     # Values are normalized left, top, right, bottom coordinates.
-    "/dev/video4": (0.00, 0.04, 0.94, 0.93),
+    REALSENSE_COLOR: (0.00, 0.04, 0.94, 0.93),
 }
 
 

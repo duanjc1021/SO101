@@ -3,6 +3,7 @@
 
 Each 30 Hz frame stores:
   observation.state          float32[6]  follower joint positions (.pos)
+  
   action                     float32[6]  leader commanded joint positions (.pos)
   observation.images.top     RGB video   RealSense D435i (overhead / scene)
   observation.images.wrist   RGB video   USB2.0 CAM1 (wrist)
@@ -27,6 +28,7 @@ from __future__ import annotations
 import argparse
 import logging
 import select
+import shutil
 import sys
 import termios
 import time
@@ -55,16 +57,18 @@ DEFAULT_FPS = 30
 
 # Default language instruction. Keep the wording identical across every episode of
 # the same task — pi0.5 is language-conditioned, so inconsistent strings hurt training.
-DEFAULT_TASK = "put the blue cube in the box"
+DEFAULT_TASK = "put the blue cube in the brown box"
 DEFAULT_NUM_EPISODES = 30
 
 # Camera roles identified by unplugging the top camera (the RealSense disappeared):
-#   top   = RealSense D435i RGB color node ("video-index2")
+#   top   = RealSense D435i RGB *color* camera = "video-index0" (YUYV)
 #   wrist = USB2.0 CAM1 (Sonix)
-# Pinned to stable /dev/v4l/by-id paths so the device numbers can shuffle freely.
+# IMPORTANT: the D435i exposes several nodes. "video-index0" is the RGB color stream;
+# "video-index2" is an *infrared* camera and records grayscale, so it must NOT be used
+# for the top view. Pinned to stable /dev/v4l/by-id paths (device numbers shuffle).
 DEFAULT_TOP_CAMERA = (
     "/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_"
-    "Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index2"
+    "Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index0"
 )
 DEFAULT_WRIST_CAMERA = (
     "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
@@ -94,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Auto-stop each episode after this many seconds. 0 = stop manually with ENTER.",
     )
-    parser.add_argument("--resume", action="store_true", help="Append to an existing dataset instead of creating one.")
+    parser.add_argument("--resume", action="store_true", help="(No longer needed: appending is automatic when the dataset folder already exists.)")
     parser.add_argument("--top-camera", default=DEFAULT_TOP_CAMERA)
     parser.add_argument("--wrist-camera", default=DEFAULT_WRIST_CAMERA)
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
@@ -203,6 +207,8 @@ def main() -> int:
 
     captures: dict[str, cv2.VideoCapture] = {}
     dataset: LeRobotDataset | None = None
+    created_fresh = False
+    episodes_done = 0
     try:
         calibrate_on_connect = not args.connect_without_calibration
         logging.info("Connecting leader and follower (align follower near leader pose first)...")
@@ -215,10 +221,25 @@ def main() -> int:
 
         features = build_features(follower, leader, args.width, args.height)
 
-        if args.resume or (dataset_root / "meta" / "info.json").is_file():
-            logging.info("Resuming existing dataset at %s", dataset_root)
+        # Open the dataset:
+        #  - valid dataset already on disk (has meta/info.json) -> append to it.
+        #    resume() loads metadata locally and only contacts the HuggingFace Hub
+        #    when that local metadata is missing, so this stays fully offline.
+        #  - an incomplete leftover dir (no meta/info.json, e.g. from a crashed run)
+        #    can be neither resumed nor created over (create() raises FileExistsError),
+        #    so remove the empty shell and create fresh.
+        created_fresh = False
+        if (dataset_root / "meta" / "info.json").is_file():
             dataset = LeRobotDataset.resume(repo_id, root=dataset_root, image_writer_threads=4)
+            logging.info(
+                "Appending to existing dataset at %s (%d episode(s) already recorded)",
+                dataset_root,
+                dataset.meta.total_episodes,
+            )
         else:
+            if dataset_root.exists():
+                logging.warning("Removing incomplete dataset dir (no meta/info.json): %s", dataset_root)
+                shutil.rmtree(dataset_root)
             logging.info("Creating dataset at %s", dataset_root)
             dataset = LeRobotDataset.create(
                 repo_id=repo_id,
@@ -229,6 +250,7 @@ def main() -> int:
                 use_videos=True,
                 image_writer_threads=4,
             )
+            created_fresh = True
 
         frame_period = 1.0 / args.fps
         episodes_done = 0
@@ -240,7 +262,7 @@ def main() -> int:
         interactive = sys.stdin.isatty()
         print(f"\nTask: {args.task!r} | target {args.num_episodes} episode(s)", flush=True)
         if interactive:
-            print("ENTER = start episode | ENTER = stop & save | q = quit\n", flush=True)
+            print("ENTER = start episode | ENTER = stop & save | d = discard episode | q = quit\n", flush=True)
             print("[idle] move the arm to the start pose, then press ENTER to record.", flush=True)
         else:
             print(
@@ -276,6 +298,14 @@ def main() -> int:
                     elif key == "q":
                         break
                 elif state == "recording":
+                    if key == "d":
+                        # Discard a botched demo without saving it (keeps the dataset clean).
+                        print(f"[discard] dropping current episode ({episode_frames} frames, not saved).", flush=True)
+                        dataset.clear_episode_buffer()
+                        state = "idle"
+                        print(f"[idle] discarded. {episodes_done}/{args.num_episodes} saved. ENTER to record, q to quit.", flush=True)
+                        next_t = time.perf_counter()
+                        continue
                     auto_stop = args.episode_time_s > 0 and (now - episode_start) >= args.episode_time_s
                     if key in ("\r", "\n") or auto_stop:
                         print(f"[save] encoding {episode_frames} frames ...", flush=True)
@@ -299,6 +329,18 @@ def main() -> int:
         logging.info("Recorded %d episode(s) into %s", episodes_done, dataset_root)
         return 0
     finally:
+        # finalize() flushes the metadata buffer and writes parquet footers; without
+        # it the dataset is left invalid (empty meta/). It is idempotent and must run
+        # even on Ctrl+C, so it lives here in finally.
+        if dataset is not None:
+            try:
+                dataset.finalize()
+            except Exception:
+                logging.exception("Failed to finalize dataset")
+            if created_fresh and episodes_done == 0 and dataset_root.exists():
+                # A brand-new dataset with nothing recorded would just be a broken shell.
+                shutil.rmtree(dataset_root, ignore_errors=True)
+                logging.info("Removed empty dataset dir (no episodes recorded).")
         for name, device in (("leader", leader), ("follower", follower)):
             try:
                 if device.is_connected:

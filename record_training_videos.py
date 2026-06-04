@@ -28,12 +28,11 @@ DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30.0
 # Scene cameras matching view_cameras.py: RealSense D435i RGB + USB2.0 CAM1.
 # Pin to stable /dev/v4l/by-id paths instead of /dev/videoN numbers, which shuffle
-# on reboot/replug (the RealSense exposes 4 nodes; its RGB index has been video4
-# and video2 on different boots). The RealSense RGB color stream is its
-# "video-index2" node; the other RealSense indices are depth/IR and either won't
-# open or deliver non-RGB frames, so they are deliberately not used here.
+# on reboot/replug (the RealSense exposes 4 nodes). The RealSense RGB *color* stream
+# is its "video-index0" node (YUYV); "video-index2" is an *infrared* camera that
+# records grayscale and must not be used for color, and the rest are depth/IR.
 DEFAULT_CAMERAS = (
-    "/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index2",
+    "/dev/v4l/by-id/usb-Intel_R__RealSense_TM__Depth_Camera_435i_Intel_R__RealSense_TM__Depth_Camera_435i_252443060783-video-index0",
     "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
 )
 # Pin to stable by-id paths (serial numbers) instead of volatile ttyACM* numbers,
