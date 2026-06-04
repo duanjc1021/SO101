@@ -1,9 +1,10 @@
 #!/home/jincheng/Desktop/vla/lerobot/.miniforge3/envs/lerobot/bin/python
 """Teleoperate an SO101 follower arm from an SO101 leader arm.
 
-Defaults for this setup:
-  follower: /dev/ttyACM0, calibration bimanual_follower_0_left.json
-  leader:   /dev/ttyACM1, calibration bimanual_leader_0_left.json
+Defaults for this setup (pinned to stable by-id serial paths so the
+ttyACM0/ttyACM1 enumeration can never swap the arms on reboot/replug):
+  follower: serial 5B14111036, calibration bimanual_follower_0_left.json
+  leader:   serial 5B14031758, calibration bimanual_leader_0_left.json
 
 Run:
   python leader_follower_teleop.py
@@ -20,8 +21,10 @@ import time
 from pathlib import Path
 
 
-DEFAULT_FOLLOWER_PORT = "/dev/ttyACM0"
-DEFAULT_LEADER_PORT = "/dev/ttyACM1"
+# Pin to stable by-id paths (serial numbers) instead of volatile ttyACM* numbers,
+# which can swap between the two arms on reboot/replug.
+DEFAULT_FOLLOWER_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14111036-if00"
+DEFAULT_LEADER_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14031758-if00"
 DEFAULT_FOLLOWER_ID = "bimanual_follower_0_left"
 DEFAULT_LEADER_ID = "bimanual_leader_0_left"
 DEFAULT_FPS = 60

@@ -16,7 +16,8 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_FOLLOWER_PORT = "/dev/ttyACM0"
+# Stable by-id serial path (ttyACM* numbers can swap the arms on reboot/replug).
+DEFAULT_FOLLOWER_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14111036-if00"
 DEFAULT_FOLLOWER_ID = "bimanual_follower_0_left"
 
 
