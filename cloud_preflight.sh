@@ -26,11 +26,11 @@ echo "== 2. JAX sees the GPU =="
 uv run python -c "import jax; d=jax.devices(); print('  devices:', d); assert any('cuda' in str(x).lower() or 'gpu' in str(x).lower() for x in d), 'JAX sees no GPU'" \
   && pass "JAX has a CUDA device" || bad "JAX cannot see the GPU (CUDA/JAX version mismatch) — training would run on CPU"
 
-echo "== 3. Disk free (checkpoints are ~35GB each for full fine-tune) =="
+echo "== 3. Disk free (Plan B: params-only checkpoints ~6.6GB each) =="
 free_gb=$(df -BG --output=avail . | tail -1 | tr -dc '0-9')
 echo "  free: ${free_gb} GB on $(pwd)"
-[ "${free_gb:-0}" -ge 120 ] && pass "disk >=120GB (room for several full checkpoints)" \
-  || warning "disk ${free_gb}GB is tight for full checkpoints (~35GB each) — stream to your computer + delete, or enlarge volume"
+[ "${free_gb:-0}" -ge 35 ] && pass "disk >=35GB (deps + base + one ~6.6GB params checkpoint)" \
+  || bad "disk ${free_gb}GB too small even for params-only — need ~35GB (deps ~15 + base ~7 + checkpoint ~7 + headroom)"
 
 echo "== 4. Config loads + key params =="
 uv run python -c "
@@ -38,9 +38,11 @@ from openpi.training import config as c
 t = c.get_config('pi05_so101')
 print('  name=%s batch=%d steps=%d ema=%s' % (t.name, t.batch_size, t.num_train_steps, t.ema_decay))
 print('  episodes kept: %d (expect 58)' % len(t.data.base_config.episodes))
+print('  save_train_state=%s keep_period=%s (Plan B: expect False / None)' % (t.save_train_state, t.keep_period))
 assert t.batch_size == 32 and t.num_train_steps == 30000
 assert len(t.data.base_config.episodes) == 58
-" && pass "pi05_so101 config valid (batch 32, 30k steps, 58 episodes)" || bad "config failed to load/validate"
+assert t.save_train_state is False, 'Plan B not active — checkpoints will be ~35GB and overflow disk'
+" && pass "pi05_so101 config valid (batch 32, 30k steps, 58 eps, params-only checkpoints)" || bad "config failed to load/validate"
 
 echo "== 5. Dataset resolves via repo_id (HF_LEROBOT_HOME) =="
 echo "  HF_LEROBOT_HOME=${HF_LEROBOT_HOME:-<unset>}"

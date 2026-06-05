@@ -1,7 +1,7 @@
 From 9581c9549ac9357e917d2b54fc99d6f2c6a93936 Mon Sep 17 00:00:00 2001
 From: duanjc1021 <duan2@seas.upenn.edu>
 Date: Fri, 5 Jun 2026 17:12:44 +0800
-Subject: [PATCH 2/3] Add pi05_so101_lora config (LoRA fine-tune for small
+Subject: [PATCH 2/4] Add pi05_so101_lora config (LoRA fine-tune for small
  GPUs)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
 From d1cb16ef8d77c9bea8b9f78be22fc68391aab57c Mon Sep 17 00:00:00 2001
 From: duanjc1021 <duan2@seas.upenn.edu>
 Date: Fri, 5 Jun 2026 18:08:17 +0800
-Subject: [PATCH 3/3] pi05_so101: label for A800 80GB (full fine-tune, JAX, no
+Subject: [PATCH 3/4] pi05_so101: label for A800 80GB (full fine-tune, JAX, no
  LoRA)
 
 A800 has the same 80GB as an H100, so the full fine-tune config is unchanged;

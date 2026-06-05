@@ -1,0 +1,91 @@
+From b1b0534a315c5f615f75112fdf9a4f4544bd35dd Mon Sep 17 00:00:00 2001
+From: duanjc1021 <duan2@seas.upenn.edu>
+Date: Fri, 5 Jun 2026 20:11:14 +0800
+Subject: [PATCH 4/4] Add save_train_state flag; pi05_so101 saves params-only
+ for small disks
+
+- TrainConfig.save_train_state (default True). When False, save_state writes only
+  the inference params item (~6.6GB), skipping the large train_state (~35GB).
+  Disables --resume.
+- pi05_so101: save_train_state=False + keep_period=None so a single ~6.6GB
+  checkpoint fits a ~50GB cloud disk; stream params/ to local storage.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ scripts/train.py                   | 4 +++-
+ src/openpi/training/checkpoints.py | 7 ++++++-
+ src/openpi/training/config.py      | 9 +++++++++
+ 3 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/train.py b/scripts/train.py
+index 5d28941..917eeba 100644
+--- a/scripts/train.py
++++ b/scripts/train.py
+@@ -270,7 +270,9 @@ def main(config: _config.TrainConfig):
+         batch = next(data_iter)
+ 
+         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
++            _checkpoints.save_state(
++                checkpoint_manager, train_state, data_loader, step, save_train_state=config.save_train_state
++            )
+ 
+     logging.info("Waiting for checkpoint manager to finish")
+     checkpoint_manager.wait_until_finished()
+diff --git a/src/openpi/training/checkpoints.py b/src/openpi/training/checkpoints.py
+index f32a831..ee20d62 100644
+--- a/src/openpi/training/checkpoints.py
++++ b/src/openpi/training/checkpoints.py
+@@ -67,6 +67,7 @@ def save_state(
+     state: training_utils.TrainState,
+     data_loader: _data_loader.DataLoader,
+     step: int,
++    save_train_state: bool = True,
+ ):
+     def save_assets(directory: epath.Path):
+         # Save the normalization stats.
+@@ -80,9 +81,13 @@ def save_state(
+         train_state, params = _split_params(state)
+     items = {
+         "assets": save_assets,
+-        "train_state": train_state,
+         "params": {"params": params},
+     }
++    # The train_state item (params + optimizer + EMA) is only needed to RESUME training and is
++    # large (~5x the params item). Skip it to fit small disks; the params item alone is enough
++    # for inference/deployment. NOTE: with this off, --resume will not work.
++    if save_train_state:
++        items["train_state"] = train_state
+     checkpoint_manager.save(step, items)
+ 
+ 
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 71a579f..2d259e6 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -573,6 +573,10 @@ class TrainConfig:
+     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
+     keep_period: int | None = 5000
+ 
++    # If false, checkpoints save only the inference params (~6.6GB), not the full train_state
++    # (params + optimizer + EMA, ~5x larger). Use on small disks. Disables --resume.
++    save_train_state: bool = True
++
+     # If true, will overwrite the checkpoint directory if it already exists.
+     overwrite: bool = False
+     # If true, will resume training from the last checkpoint.
+@@ -841,6 +845,11 @@ _CONFIGS = [
+         batch_size=32,
+         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+         num_train_steps=30_000,
++        # Small cloud disk (~50GB): save inference params only (~6.6GB), not train_state (~35GB).
++        # Trade-off: --resume won't work. Stream the params/ folders to your own computer.
++        save_train_state=False,
++        # Don't pin extra checkpoints on disk; keep just the latest (max_to_keep=1 in code).
++        keep_period=None,
+     ),
+     #
+     # LoRA variant of pi05_so101 for a smaller GPU (e.g. a single RTX 4090 24GB).
+-- 
+2.53.0
+
