@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Recorded data / model outputs (large, regenerable; keep out of git) ---
+recordings/
+*.mp4
+*.mkv
+*.avi
+robot_data.jsonl
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# --- LeRobot datasets (recorded separately under SO101trainingvideo/) ---
+# Guard against any dataset accidentally created inside the repo.
+*_pi05/
+data/chunk-*/
+meta/episodes/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# --- Logs / temp ---
+*.log
+*.tmp
+.cache/
+
+# NOTE: arm calibration files (bimanual_*_left.json) are intentionally TRACKED.

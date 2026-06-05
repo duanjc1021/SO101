@@ -58,7 +58,7 @@ DEFAULT_FPS = 30
 # Default language instruction. Keep the wording identical across every episode of
 # the same task — pi0.5 is language-conditioned, so inconsistent strings hurt training.
 DEFAULT_TASK = "put the blue cube in the brown box"
-DEFAULT_NUM_EPISODES = 30
+DEFAULT_NUM_EPISODES = 35
 
 # Camera roles identified by unplugging the top camera (the RealSense disappeared):
 #   top   = RealSense D435i RGB *color* camera = "video-index0" (YUYV)
