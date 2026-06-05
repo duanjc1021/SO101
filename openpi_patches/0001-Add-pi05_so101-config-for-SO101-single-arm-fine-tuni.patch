@@ -1,0 +1,245 @@
+From 1d812d7bf4a15d59c57f8a0adbb02310b2a7d9eb Mon Sep 17 00:00:00 2001
+From: duanjc1021 <duan2@seas.upenn.edu>
+Date: Fri, 5 Jun 2026 15:37:36 +0800
+Subject: [PATCH] Add pi05_so101 config for SO101 single-arm fine-tuning
+
+- so101_policy.py: SO101 input/output transforms (6-DOF, top+wrist cameras,
+  third image slot masked).
+- config.py: LeRobotSO101DataConfig + pi05_so101 TrainConfig (pi05_base weights,
+  delta actions on 5 joints, prompt_from_task). Add DataConfig.episodes field to
+  exclude bad episodes (6,9,33,34,43,48,52) -> 58 of 65 episodes trained.
+- data_loader.py: pass episodes= through to the LeRobot dataset.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ src/openpi/policies/so101_policy.py | 91 +++++++++++++++++++++++++++++
+ src/openpi/training/config.py       | 80 +++++++++++++++++++++++++
+ src/openpi/training/data_loader.py  |  2 +
+ 3 files changed, 173 insertions(+)
+ create mode 100644 src/openpi/policies/so101_policy.py
+
+diff --git a/src/openpi/policies/so101_policy.py b/src/openpi/policies/so101_policy.py
+new file mode 100644
+index 0000000..78cd63a
+--- /dev/null
++++ b/src/openpi/policies/so101_policy.py
+@@ -0,0 +1,91 @@
++"""Input/output transforms for the SO101 single-arm robot (pi0.5 fine-tuning).
++
++SO101 has a single 6-DOF arm (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
++wrist_roll, gripper) and two RGB cameras: a top/scene view and a wrist view. pi0
++models accept three image slots (one third-person + two wrist), so we map:
++
++    top   -> base_0_rgb
++    wrist -> left_wrist_0_rgb
++    (none -> right_wrist_0_rgb, zero-padded and masked out)
++
++This mirrors openpi's LIBERO transforms (also single-arm, 2 cameras) — the only
++SO101-specific change is the action dimension: 6, not 7.
++"""
++
++import dataclasses
++
++import einops
++import numpy as np
++
++from openpi import transforms
++from openpi.models import model as _model
++
++# SO101 has 6 joints (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper).
++SO101_ACTION_DIM = 6
++
++
++def make_so101_example() -> dict:
++    """A random input example matching the keys the policy server receives at inference."""
++    return {
++        "observation/state": np.random.rand(SO101_ACTION_DIM),
++        "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
++        "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
++        "prompt": "put the blue cube in the brown box",
++    }
++
++
++def _parse_image(image) -> np.ndarray:
++    """LeRobot stores images as float32 (C,H,W); the model wants uint8 (H,W,C)."""
++    image = np.asarray(image)
++    if np.issubdtype(image.dtype, np.floating):
++        image = (255 * image).astype(np.uint8)
++    if image.shape[0] == 3:
++        image = einops.rearrange(image, "c h w -> h w c")
++    return image
++
++
++@dataclasses.dataclass(frozen=True)
++class SO101Inputs(transforms.DataTransformFn):
++    """Convert SO101 dataset/inference inputs into the model's expected format."""
++
++    # Determines which model will be used. Do not change this for your own dataset.
++    model_type: _model.ModelType
++
++    def __call__(self, data: dict) -> dict:
++        base_image = _parse_image(data["observation/image"])
++        wrist_image = _parse_image(data["observation/wrist_image"])
++
++        inputs = {
++            "state": data["observation/state"],
++            "image": {
++                "base_0_rgb": base_image,
++                "left_wrist_0_rgb": wrist_image,
++                # SO101 has no right wrist camera: pad with zeros and mask it out below.
++                "right_wrist_0_rgb": np.zeros_like(base_image),
++            },
++            "image_mask": {
++                "base_0_rgb": np.True_,
++                "left_wrist_0_rgb": np.True_,
++                # Padding image is masked for pi0/pi0.5 (only pi0-FAST keeps it True).
++                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
++            },
++        }
++
++        # Actions are only present during training (padded to model dim later by PadStatesAndActions).
++        if "actions" in data:
++            inputs["actions"] = data["actions"]
++
++        # Language instruction (pi0.5 is language-conditioned).
++        if "prompt" in data:
++            inputs["prompt"] = data["prompt"]
++
++        return inputs
++
++
++@dataclasses.dataclass(frozen=True)
++class SO101Outputs(transforms.DataTransformFn):
++    """Convert model outputs back to SO101 actions (inference only)."""
++
++    def __call__(self, data: dict) -> dict:
++        # Strip the padding the model added: SO101 uses the first 6 action dims.
++        return {"actions": np.asarray(data["actions"][:, :SO101_ACTION_DIM])}
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 4ca47e1..43782f3 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
+ import openpi.policies.aloha_policy as aloha_policy
+ import openpi.policies.droid_policy as droid_policy
+ import openpi.policies.libero_policy as libero_policy
++import openpi.policies.so101_policy as so101_policy
+ import openpi.shared.download as _download
+ import openpi.shared.normalize as _normalize
+ import openpi.training.droid_rlds_dataset as droid_rlds_dataset
+@@ -90,6 +91,11 @@ class DataConfig:
+     # If true, will use the LeRobot dataset task to define the prompt.
+     prompt_from_task: bool = False
+ 
++    # Optional subset of LeRobot episode indices to train on. If None, all episodes are used.
++    # Used to EXCLUDE bad episodes (e.g. SO101 eps 6,9,33,34,43,48,52 with video/data frame
++    # mismatch) without physically deleting them from the dataset.
++    episodes: Sequence[int] | None = None
++
+     # Only used for RLDS data loader (ie currently only used for DROID).
+     rlds_data_dir: str | None = None
+     # Action space for DROID dataset.
+@@ -355,6 +361,56 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
+         )
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class LeRobotSO101DataConfig(DataConfigFactory):
++    """Data config for the SO101 single-arm robot (so101_pi05 LeRobotDataset).
++
++    Single 6-DOF arm + two cameras (top, wrist). Closely mirrors LeRobotLiberoDataConfig;
++    differences are the dataset key names and the SO101 input/output transforms.
++    """
++
++    @override
++    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
++        # Remap the so101_pi05 dataset's keys to the keys the SO101 transforms expect.
++        # The dataset stores: observation.images.top / observation.images.wrist /
++        # observation.state / action (see record_pi05_dataset.py).
++        repack_transform = _transforms.Group(
++            inputs=[
++                _transforms.RepackTransform(
++                    {
++                        "observation/image": "observation.images.top",
++                        "observation/wrist_image": "observation.images.wrist",
++                        "observation/state": "observation.state",
++                        "actions": "action",
++                    }
++                )
++            ]
++        )
++
++        data_transforms = _transforms.Group(
++            inputs=[so101_policy.SO101Inputs(model_type=model_config.model_type)],
++            outputs=[so101_policy.SO101Outputs()],
++        )
++
++        # SO101 teleop records ABSOLUTE target joint angles (leader .pos), so convert the
++        # first 5 joints to deltas (relative to the first state in each chunk); the 6th
++        # (gripper) stays absolute. pi0/pi0.5 are trained on delta actions.
++        delta_action_mask = _transforms.make_bool_mask(5, -1)
++        data_transforms = data_transforms.push(
++            inputs=[_transforms.DeltaActions(delta_action_mask)],
++            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
++        )
++
++        model_transforms = ModelTransformFactory()(model_config)
++
++        return dataclasses.replace(
++            self.create_base_config(assets_dirs, model_config),
++            repack_transforms=repack_transform,
++            data_transforms=data_transforms,
++            model_transforms=model_transforms,
++        )
++
++
+ @dataclasses.dataclass(frozen=True)
+ class RLDSDroidDataConfig(DataConfigFactory):
+     """
+@@ -762,6 +818,30 @@ _CONFIGS = [
+         num_train_steps=30_000,
+     ),
+     #
++    # Fine-tuning pi0.5 on the SO101 single-arm robot (custom LeRobot dataset).
++    #
++    TrainConfig(
++        name="pi05_so101",
++        # SO101: single 6-DOF arm, top + wrist cameras, language-conditioned pick-and-place.
++        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
++        data=LeRobotSO101DataConfig(
++            # Local dataset: set HF_LEROBOT_HOME so this resolves to .../so101/so101_pi05,
++            # or push the dataset to the Hub and change this to your hub repo id.
++            repo_id="so101/so101_pi05",
++            base_config=DataConfig(
++                prompt_from_task=True,  # prompt = the dataset's task string
++                # Exclude the 7 episodes with a video/data frame mismatch (see
++                # SO101/excluded_episodes.py). 65 episodes on disk -> 58 used for training.
++                # NOTE: bump the range(65) if you record more good episodes.
++                episodes=[e for e in range(65) if e not in (6, 9, 33, 34, 43, 48, 52)],
++            ),
++        ),
++        # Single H100 80GB, full fine-tune. Lower this if you hit OOM.
++        batch_size=32,
++        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
++        num_train_steps=30_000,
++    ),
++    #
+     # Fine-tuning Aloha configs.
+     #
+     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
+diff --git a/src/openpi/training/data_loader.py b/src/openpi/training/data_loader.py
+index e2ee7dd..ec48b12 100644
+--- a/src/openpi/training/data_loader.py
++++ b/src/openpi/training/data_loader.py
+@@ -140,6 +140,8 @@ def create_torch_dataset(
+     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+     dataset = lerobot_dataset.LeRobotDataset(
+         data_config.repo_id,
++        # Optionally restrict to a subset of episodes (e.g. to exclude bad episodes).
++        episodes=list(data_config.episodes) if data_config.episodes is not None else None,
+         delta_timestamps={
+             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+         },
+-- 
+2.53.0
+
