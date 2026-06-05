@@ -1,0 +1,31 @@
+From d1cb16ef8d77c9bea8b9f78be22fc68391aab57c Mon Sep 17 00:00:00 2001
+From: duanjc1021 <duan2@seas.upenn.edu>
+Date: Fri, 5 Jun 2026 18:08:17 +0800
+Subject: [PATCH 3/3] pi05_so101: label for A800 80GB (full fine-tune, JAX, no
+ LoRA)
+
+A800 has the same 80GB as an H100, so the full fine-tune config is unchanged;
+only the comment is updated to reflect the target GPU.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ src/openpi/training/config.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index d39e000..71a579f 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -836,7 +836,8 @@ _CONFIGS = [
+                 episodes=[e for e in range(65) if e not in (6, 9, 33, 34, 43, 48, 52)],
+             ),
+         ),
+-        # Single H100 80GB, full fine-tune. Lower this if you hit OOM.
++        # Single A800 80GB (= A100-class, same 80GB VRAM as an H100, ~2x slower).
++        # Full fine-tune in JAX (openpi default path) — NO LoRA. Lower batch_size if you hit OOM.
+         batch_size=32,
+         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+         num_train_steps=30_000,
+-- 
+2.53.0
+
