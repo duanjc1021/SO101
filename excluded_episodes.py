@@ -18,8 +18,10 @@ Usage (openpi pi05_so101 config): pass keep_episodes(total) as the data config's
 
 from __future__ import annotations
 
-# Bad episodes (video-vs-data frame mismatch). Add more here if found later.
-EXCLUDED_EPISODES: tuple[int, ...] = (6, 9)
+# Bad episodes (video-vs-data frame mismatch: concatenated mp4 segment longer than
+# data row count; data timestamps themselves are clean 30 Hz). Found via the full
+# integrity sweep over all 65 episodes. 34 and 52 have the largest surplus (~3 s).
+EXCLUDED_EPISODES: tuple[int, ...] = (6, 9, 33, 34, 43, 48, 52)
 
 
 def keep_episodes(total_episodes: int) -> list[int]:
