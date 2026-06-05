@@ -1,0 +1,68 @@
+From 9581c9549ac9357e917d2b54fc99d6f2c6a93936 Mon Sep 17 00:00:00 2001
+From: duanjc1021 <duan2@seas.upenn.edu>
+Date: Fri, 5 Jun 2026 17:12:44 +0800
+Subject: [PATCH 2/2] Add pi05_so101_lora config (LoRA fine-tune for small
+ GPUs)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+LoRA adapters in both the VLM and action expert (base frozen), batch_size=16,
+ema_decay=None — fits a single RTX 4090 24GB. Same dataset + episode exclusion
+as pi05_so101.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ src/openpi/training/config.py | 36 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 43782f3..d39e000 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -842,6 +842,42 @@ _CONFIGS = [
+         num_train_steps=30_000,
+     ),
+     #
++    # LoRA variant of pi05_so101 for a smaller GPU (e.g. a single RTX 4090 24GB).
++    # Trains only low-rank adapters in BOTH the VLM and the action expert; base weights frozen.
++    #
++    TrainConfig(
++        name="pi05_so101_lora",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=10,
++            discrete_state_input=False,
++            paligemma_variant="gemma_2b_lora",
++            action_expert_variant="gemma_300m_lora",
++        ),
++        data=LeRobotSO101DataConfig(
++            repo_id="so101/so101_pi05",
++            base_config=DataConfig(
++                prompt_from_task=True,
++                # Same exclusion as pi05_so101 (see SO101/excluded_episodes.py). Bump range(65) if you record more.
++                episodes=[e for e in range(65) if e not in (6, 9, 33, 34, 43, 48, 52)],
++            ),
++        ),
++        # 4090 24GB: LoRA fits at a smaller batch. Drop to 8 if you still OOM.
++        batch_size=16,
++        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
++        num_train_steps=30_000,
++        # Freeze base weights; train only LoRA adapters. Must match the model variants above.
++        freeze_filter=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=10,
++            discrete_state_input=False,
++            paligemma_variant="gemma_2b_lora",
++            action_expert_variant="gemma_300m_lora",
++        ).get_freeze_filter(),
++        # EMA doubles parameter memory; turn it off for LoRA on a small GPU.
++        ema_decay=None,
++    ),
++    #
+     # Fine-tuning Aloha configs.
+     #
+     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
+-- 
+2.53.0
+
